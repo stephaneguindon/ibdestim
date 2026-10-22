@@ -3,6 +3,7 @@ import random
 import numpy as np
 import pandas as pd
 import argparse
+import os
 
 def reflected_uniform(xy0, l):
 	return 1.0 / l**2
@@ -130,6 +131,13 @@ input_file = args.input_file
 output_file = args.output_file
 subsample_size = args.n_subsamples
 
+try:
+    os.remove(output_file)
+    print(f"Output file deleted successfully: {output_file}")
+except FileNotFoundError:
+    pass
+
+
 print(f"Running maximum-likelihood estimation for data in file {input_file}")
 print(f"Results will be saved to file {output_file}")
 
@@ -156,8 +164,8 @@ data = data.loc[:(subsample_size - 1)]
 
 # data = data.sample(n=subsample_size)
 
-m = np.arange(0.01, 1.0, 0.05)
-l = np.arange(15, 200, 5)
+m = np.arange(0.01, 1.0, 0.1)
+l = np.arange(15, 200, 10)
 
 lk = np.zeros((len(m),len(l)))
 
@@ -191,24 +199,48 @@ while(lk[0] - lk[int(0.8*len(lk))] > 1):
   # normalize lk values to sum up to one
   p = np.exp(lk-lk.max())
   p = p / sum(p)
-	# random draw of indices using lk as weights
-  idx = np.random.choice(len(lk), size=len(lk), p=p)
 	
-  # save the values of m and l corresponding to the indices
-  m = m[idx]
-  l = l[idx]
-  
-  # add noise to the values of m and l
-  m = m + np.random.normal(0, m/5, len(m))
-	# set minimum value of m to 0.05
+
+  # rank m, l and lk in descending order of values of p
+  sorted_indices = (-p).argsort()
+  lk = lk[sorted_indices]
+  m = m[sorted_indices]
+  l = l[sorted_indices]
+	
+  # take the top 50%
+  lk = lk[:round(len(lk)/2)]
+  m = m[:round(len(m)/2)]
+  l = l[:round(len(l)/2)]
+
+  # populate the second half of m and l with noisy values of the first half
+  m[round(len(m)/2)+1:len(m)] = m[round(len(m)/2)+1:len(m)] + np.random.normal(0, m[round(len(m)/2)+1:len(m)]/5, len(m) - round(len(m)/2) - 1)
   m = np.maximum(m, 0.05)
 	# set maximum value of m to 1.00
   m = np.minimum(m, 1.00)
 	
-  l = l + np.random.normal(0, l/10, len(l))
+  l[round(len(l)/2)+1:len(l)] = l[round(len(l)/2)+1:len(l)] + np.random.normal(0, l[round(len(l)/2)+1:len(l)]/10, len(l) - round(len(l)/2) - 1)
   l = l.astype(int)
   # set minimum value of l to 10
   l = np.maximum(l, 15)
+	
+  # # random draw of indices using lk as weights
+  # idx = np.random.choice(len(lk), size=len(lk), p=p)
+	
+  # # save the values of m and l corresponding to the indices
+  # m = m[idx]
+  # l = l[idx]
+  
+  # # add noise to the values of m and l
+  # m = m + np.random.normal(0, m/5, len(m))
+	# # set minimum value of m to 0.05
+  # m = np.maximum(m, 0.05)
+	# # set maximum value of m to 1.00
+  # m = np.minimum(m, 1.00)
+	
+  # l = l + np.random.normal(0, l/10, len(l))
+  # l = l.astype(int)
+  # # set minimum value of l to 10
+  # l = np.maximum(l, 15)
 	
   # compute lk for the new values of m and l
   for i in range(len(m)):
