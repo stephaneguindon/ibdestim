@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>IBDestim — Likelihood explorer</title>
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="core.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="./index.html">IBDestim</a>
+    <h1 class="app-name">Likelihood explorer</h1>
+    <a class="docs-link" href="../README.md">Help</a>
+  </header>
+  <main>
+    <div class="page-heading">
+      <p>Load a results file to inspect the search over <i>m</i> and <i>l</i>.</p>
+    </div>
+    <div class="workspace">
+      <aside class="sidebar">
+        <section class="import-card">
+          <h2>Results file</h2>
+          <label class="dropzone" id="dropzone" for="file">
+            <strong>Choose a file</strong>
+            <span>or drop it here</span>
+            <small>TXT, CSV, TSV or JSON</small>
+            <input type="file" id="file" accept=".txt,.csv,.tsv,.json,text/*,application/json">
+          </label>
+          <p id="file-info" class="file-info">Expected columns: <code>iter m l lk</code></p>
+          <div id="file-tools" class="file-tools" hidden>
+            <button id="refresh" class="button secondary" disabled>Refresh data</button>
+            <p id="refresh-info" class="hint" role="status"></p>
+          </div>
+          <p id="message" role="status" class="message" hidden></p>
+          <details id="mapping-details">
+            <summary>Column mapping</summary>
+            <div class="mapping">
+              <label>x-axis: m<select id="column-x" disabled></select></label>
+              <label>y-axis: l<select id="column-y" disabled></select></label>
+              <label>Log-likelihood<select id="column-z" disabled></select></label>
+              <label>Generation<select id="column-g" disabled></select></label>
+              <button id="apply-columns" class="button secondary" disabled>Apply</button>
+            </div>
+          </details>
+        </section>
+        <details class="settings" id="plot-settings" open>
+          <summary>Plot settings</summary>
+          <label>Background<select id="surface"><option value="smooth" selected>Interpolated surface</option><option value="cells">Observed cells</option><option value="none">Points only</option></select></label>
+          <p class="hint" id="surface-note">Estimated logLk across the full grid. Beyond tested points, the colors are extrapolated.</p>
+          <label>Color scale<select id="contrast"><option value="linear">Linear (min to max)</option><option value="quantile" selected>Quantiles</option><option value="focus">Within 10 of the maximum</option></select></label>
+          <div class="setting-line"><label for="points">Show tested points</label><input id="points" type="checkbox" checked></div>
+          <div class="setting-line"><label for="log-y">Logarithmic l-axis</label><input id="log-y" type="checkbox"></div>
+          <label>Grid resolution <span id="resolution-value" class="label-value">70</span><input id="resolution" type="range" min="25" max="130" value="70" step="5"></label>
+          <details>
+            <summary>No generation column?</summary>
+            <div class="fallback">
+              <label><input id="row-order" type="checkbox"> Use row order</label>
+              <label>Points per step<input id="batch-size" type="number" min="1" max="1000000" value="100" step="1"></label>
+              <p class="hint">Applies when no generation column is selected. These are artificial steps; the rows must be in time order.</p>
+            </div>
+          </details>
+        </details>
+        <p class="reading-key">A star marks the best visible point. Hover for values, or click to keep a point selected.</p>
+      </aside>
+      <div class="main-column">
+        <section class="stats" aria-label="Visible results">
+          <div><span class="stat-label">Best visible logLk</span><strong id="stat-lk">—</strong><small id="stat-delta">No results loaded</small></div>
+          <div><span class="stat-label">Parameter estimates</span><strong id="stat-pair">m — <span>/</span> l —</strong><small id="stat-best-gen">For the best visible point</small></div>
+          <div><span class="stat-label">Points shown</span><strong id="stat-count">0</strong><small id="stat-total">No file loaded</small></div>
+        </section>
+        <section class="card map-card">
+          <div class="card-heading">
+            <div><h2>Parameter space <span id="data-badge" class="badge">No data</span></h2><p id="map-caption">m ∈ [0, 1], l ∈ ℕ⁺. Color shows logLk.</p></div>
+            <div class="plot-actions">
+              <button id="zoom-in" class="icon-button" title="Zoom in" aria-label="Zoom in">+</button>
+              <button id="zoom-out" class="icon-button" title="Zoom out" aria-label="Zoom out">−</button>
+              <button id="reset-view" class="button text-button">Reset view</button>
+            </div>
+          </div>
+          <div class="plot-wrap" id="plot-wrap">
+            <canvas id="map" role="img" aria-label="Tested points: m on the x-axis, l on the y-axis, colored by logLk" tabindex="0"></canvas>
+            <div id="empty" class="empty"><strong>No results loaded</strong><p>Choose a results file or drop it into the file area.</p></div>
+            <div id="tooltip" class="tooltip" hidden></div>
+          </div>
+          <div class="map-footer">
+            <span class="plot-help">Scroll to zoom. Drag to pan. Double-click to reset.</span>
+            <div class="legend"><span>logLk</span><div><div class="colorbar"></div><div class="legend-values"><span id="legend-min">min</span><span id="legend-mid"></span><span id="legend-max">max</span></div></div></div>
+          </div>
+          <p class="scale-note" id="scale-note">Color limits use the whole file and stay fixed during playback.</p>
+        </section>
+        <section class="timeline-card">
+          <div class="card-heading">
+            <div><h2>Generations</h2><p id="generation-info">Load a file to replay the search.</p></div>
+            <div class="segmented" role="group" aria-label="Points to show"><button id="mode-cumulative" aria-pressed="true">Up to this generation</button><button id="mode-current" aria-pressed="false">This generation only</button></div>
+          </div>
+          <div class="playback">
+            <button id="play" class="play-button" disabled aria-label="Play generations">▶</button>
+            <button id="prev" class="icon-button" disabled aria-label="Previous generation">‹</button>
+            <input id="generation" aria-label="Displayed generation" type="range" min="0" max="0" value="0" disabled>
+            <button id="next" class="icon-button" disabled aria-label="Next generation">›</button>
+            <label class="speed-label">Speed<select id="speed" aria-label="Playback speed"><option value="1200">Slow</option><option value="650" selected>Normal</option><option value="200">Fast</option></select></label>
+          </div>
+          <div class="timeline-labels"><span id="first-generation">First</span><strong id="current-generation">—</strong><span id="last-generation">Last</span></div>
+        </section>
+        <div class="bottom-grid">
+          <section class="convergence-card">
+            <div class="card-heading"><div><h2>Best logLk so far</h2><p>Running maximum across generations</p></div></div>
+            <div class="convergence-wrap"><canvas id="convergence" role="img" aria-label="Running maximum logLk by generation"></canvas></div>
+            <p id="convergence-note" class="hint">Click the plot to jump to a generation.</p>
+          </section>
+          <section class="ranking-card">
+            <div class="card-heading"><div><h2>Top parameter pairs</h2><p>Distinct pairs in the current view</p></div><button id="export" class="button text-button" disabled>Export CSV</button></div>
+            <div class="table-scroll"><table><thead><tr><th>#</th><th>m</th><th>l</th><th>logLk</th><th>Gen.</th></tr></thead><tbody id="ranking"><tr><td colspan="5" class="table-empty">No results yet.</td></tr></tbody></table></div>
+          </section>
+        </div>
+      </div>
+    </div>
+    <footer><span>Files stay in your browser.</span><span>IBDestim results viewer</span></footer>
+  </main>
+</body>
+</html>
