@@ -167,80 +167,54 @@ data = data.loc[:(subsample_size - 1)]
 m = np.arange(0.01, 1.0, 0.1)
 l = np.arange(15, 200, 10)
 
-lk = np.zeros((len(m),len(l)))
+# crop m and l so that their lengths are even numbers
+lenm = len(m)
+lenl = len(l)
 
+m = m[0:(lenm // 2) * 2]
+l = l[0:(lenl // 2) * 2]
+
+lenm = len(m)
+lenl = len(l)
+
+m = np.repeat(m, lenl)
+l = np.tile(l, lenm)
+lk = np.zeros((lenm*lenl))
 
 for i in range(len(m)):
-  for j in range(len(l)):
-    lk[i,j] = ibd_lk((m[i],l[j]),data)
-    print(f"Pre-calculation step... m={m[i]:.2f} l={l[j]} lk={lk[i,j]}", end="\r")
+  lk[i] = ibd_lk((m[i],l[i]),data)
+  print(f"Pre-calculation step... m={m[i]:.2f} l={l[i]} lk={lk[i]}", end="\r")
 
-# flatten the lk array and get the corresponding values of m and l
-lk = lk.flatten()
-lenm = len(m)
-m = np.repeat(m, len(l))
-l = np.repeat(l, lenm)
-
-
+# rank the values of lk in decreasing order and save the corresponding values of m and l
 sorted_indices = (-lk).argsort()
 lk = lk[sorted_indices]
 m = m[sorted_indices]
 l = l[sorted_indices]
 
-# # keep the first 20% of lk values
-# lk = lk[:int(0.5*len(lk))]
-# m = m[:int(0.5*len(lk))]
-# l = l[:int(0.5*len(lk))]
-
 iter = 0
 
 while(lk[0] - lk[int(0.8*len(lk))] > 1):
   iter += 1
-  # normalize lk values to sum up to one
-  p = np.exp(lk-lk.max())
-  p = p / sum(p)
-	
 
-  # rank m, l and lk in descending order of values of p
-  sorted_indices = (-p).argsort()
-  lk = lk[sorted_indices]
-  m = m[sorted_indices]
-  l = l[sorted_indices]
-	
-  # take the top 50%
-  lk = lk[:round(len(lk)/2)]
-  m = m[:round(len(m)/2)]
-  l = l[:round(len(l)/2)]
-
-  # populate the second half of m and l with noisy values of the first half
-  m[round(len(m)/2)+1:len(m)] = m[round(len(m)/2)+1:len(m)] + np.random.normal(0, m[round(len(m)/2)+1:len(m)]/5, len(m) - round(len(m)/2) - 1)
+  # Save results to file
+  with open(output_file, "a") as f:
+    if(iter == 1): f.write("iter m l lk\n")
+    for i in range(len(m)):
+      f.write(f"{iter} {m[i]:.2f} {l[i]:.2f} {lk[i]:.2f}\n")
+    f.close
+  
+  
+  # populate the last half of m and l with noisy values of the first half
+  m[int(0.5*len(m)):len(m)] = m[0:int(0.5*len(m))] + np.random.normal(0, m[0:int(0.5*len(m))]/10, len(m) - int(0.5*len(m)))
   m = np.maximum(m, 0.05)
 	# set maximum value of m to 1.00
   m = np.minimum(m, 1.00)
-	
-  l[round(len(l)/2)+1:len(l)] = l[round(len(l)/2)+1:len(l)] + np.random.normal(0, l[round(len(l)/2)+1:len(l)]/10, len(l) - round(len(l)/2) - 1)
+
+  # do the same for l
+  l[int(0.5*len(l)):len(l)] = l[0:int(0.5*len(l))] + np.random.normal(0, l[0:int(0.5*len(l))]/10, len(l) - int(0.5*len(l)))	
   l = l.astype(int)
   # set minimum value of l to 10
   l = np.maximum(l, 15)
-	
-  # # random draw of indices using lk as weights
-  # idx = np.random.choice(len(lk), size=len(lk), p=p)
-	
-  # # save the values of m and l corresponding to the indices
-  # m = m[idx]
-  # l = l[idx]
-  
-  # # add noise to the values of m and l
-  # m = m + np.random.normal(0, m/5, len(m))
-	# # set minimum value of m to 0.05
-  # m = np.maximum(m, 0.05)
-	# # set maximum value of m to 1.00
-  # m = np.minimum(m, 1.00)
-	
-  # l = l + np.random.normal(0, l/10, len(l))
-  # l = l.astype(int)
-  # # set minimum value of l to 10
-  # l = np.maximum(l, 15)
 	
   # compute lk for the new values of m and l
   for i in range(len(m)):
@@ -251,12 +225,6 @@ while(lk[0] - lk[int(0.8*len(lk))] > 1):
   lk = lk[sorted_indices]
   m = m[sorted_indices]
   l = l[sorted_indices]
+
 	# print mean lk values and delta lk
   print(f"Mean lk: {lk.mean():.2f} mean(m): {m.mean():.2f} mean(l): {l.mean():4.0f} delta lk: {(lk[0] - lk[int(0.8*len(lk))]):.2f}", end="\r")
-
-  # Save results to file
-  with open(output_file, "a") as f:
-    if(iter == 1): f.write("iter m l lk\n")
-    for i in range(len(m)):
-      f.write(f"{iter} {m[i]:.2f} {l[i]:.2f} {lk[i]:.2f}\n")
-    f.close
