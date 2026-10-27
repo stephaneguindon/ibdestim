@@ -116,7 +116,7 @@ input[type="range"] { width: 100%; height: 5px; accent-color: var(--accent); mar
 .icon-button { width: 29px; height: 29px; padding: 0; font-size: 18px; }
 .plot-wrap { position: relative; height: 460px; margin: 0 10px; }
 canvas { display: block; width: 100%; height: 100%; }
-#map { touch-action: none; cursor: crosshair; }
+#map { width: 100%; height: 100%; }
 .empty {
   position: absolute;
   inset: 35px 25px 65px 65px;
@@ -132,7 +132,7 @@ canvas { display: block; width: 100%; height: 100%; }
 .empty strong { font-size: 15px; font-weight: 500; }
 .empty p { font-size: 13px; line-height: 1.5; color: var(--muted); }
 [hidden] { display: none !important; }
-.tooltip { position: absolute; z-index: 3; min-width: 195px; padding: 11px 13px; border: 1px solid #92989e; border-radius: 3px; background: #fffffff5; color: #292c30; pointer-events: none; font: 12px/1.8 var(--mono); box-shadow: 0 2px 6px #00000012; }
+.tooltip { position: absolute; left: 70px; bottom: 65px; z-index: 3; max-width: calc(100% - 90px); overflow-wrap: anywhere; padding: 11px 13px; border: 1px solid #92989e; border-radius: 3px; background: #fffffff5; color: #292c30; pointer-events: none; font: 12px/1.8 var(--mono); box-shadow: 0 2px 6px #00000012; }
 .tooltip strong { display: block; margin-bottom: 5px; font: 600 12px system-ui, sans-serif; }
 .tooltip span { display: inline-block; width: 83px; color: var(--muted); }
 .tooltip small { display: block; margin-top: 5px; color: var(--muted); font: 11px system-ui, sans-serif; }

@@ -4,12 +4,12 @@
   const $ = id => document.getElementById(id);
   const C = window.IBD;
   const state = { parsed: null, data: null, visible: [], current: 0, cumulative: true, timer: null,
-    source: null, view: { x0: 0, x1: 1, y0: 0, y1: 200 }, pinned: null, screens: [], surfaceCache: null, interpolatorCache: null };
+    source: null, view: { x0: 0, x1: 1, y0: 0, y1: 200 }, pinned: null, densityCache: null };
   const format = (n, digits = 3) => Number.isFinite(n) ? n.toLocaleString('en-US', { maximumFractionDigits: digits }) : '—';
   const axisFormat = n => Math.abs(n) >= 100000 ? n.toExponential(1) : format(n, Math.abs(n) < .01 && n !== 0 ? 5 : 2);
   const raw = n => String(n);
   const count = (n, noun) => `${format(n, 0)} ${noun}${n === 1 ? '' : 's'}`;
-  let plot = null, chart = null, renderPending = false, pointer = null, moved = false;
+  let chart = null, renderPending = false, mapDrawing = false, mapQueued = false, plotReady = false;
   let readVersion = 0, legacyPicker = false, pendingRefresh = null, directFileAccessBlocked = false;
   const blockedFileAccess = error => ['NotAllowedError', 'SecurityError', 'NotSupportedError'].includes(error.name);
 
@@ -72,7 +72,7 @@
   }
   function loadParsed(parsed, name) {
     // Do not show the previous file's map under a newly imported file's name.
-    stop(); state.data = null; state.visible = []; state.best = null; state.pinned = null; state.surfaceCache = null;
+    stop(); state.data = null; state.visible = []; state.best = null; state.pinned = null;
     hideTooltip(); resetView();
     $('empty').hidden = false; $('empty').querySelector('strong').textContent = 'Choose the columns to display this file';
     $('data-badge').textContent = 'Waiting for column mapping';
@@ -229,8 +229,7 @@
   function update() {
     const d = state.data; if (!d) return;
     state.visible = state.cumulative ? d.points.filter(p => p.gi <= state.current) : d.groups[state.current];
-    state.surfaceCache = null;
-    state.interpolatorCache = null;
+
     const best = state.cumulative ? d.progress[state.current] : state.visible.reduce((a, p) => !a || p.z > a.z ? p : a, null);
     state.best = best;
     $('stat-lk').textContent = format(best.z, 3);
@@ -254,7 +253,7 @@
       });
       return row;
     }));
-    $('map').setAttribute('aria-label', `${state.visible.length} visible points. Best logLk ${best.z}, at m ${best.x}, l ${best.y}.`);
+    $('map').setAttribute('aria-label', `${likelihoodBackground() ? 'LogLk and point density' : 'Point density'} for ${state.visible.length} visible tested points. Best logLk ${best.z}, at m ${best.x}, l ${best.y}.`);
     if (state.pinned && !state.visible.includes(state.pinned)) { state.pinned = null; hideTooltip(); }
     updateLegend(); scheduleDraw();
   }
@@ -286,37 +285,56 @@
     $('mode-cumulative').setAttribute('aria-pressed', String(cumulative));
     $('mode-current').setAttribute('aria-pressed', String(!cumulative)); update();
   });
-  function updateLegend() {
-    const d = state.data; if (!d) return;
-    const mode = $('contrast').value;
-    const low = mode === 'focus' ? Math.max(d.minZ, d.maxZ - 10) : d.minZ;
-    const middle = mode === 'quantile' ? d.sortedZ[Math.floor((d.sortedZ.length - 1) / 2)] : (low + d.maxZ) / 2;
-    $('legend-min').textContent = `${mode === 'focus' && low > d.minZ ? '≤ ' : ''}${format(low, 2)}`;
-    $('legend-mid').textContent = format(middle, 2);
-    $('legend-max').textContent = format(d.maxZ, 2);
-    const equal = d.minZ === d.maxZ;
-    document.querySelector('.colorbar').style.background = equal ? `rgb(${C.color(.5).join(',')})` : '';
-    $('scale-note').textContent = equal ? 'All logLk values are equal.' : mode === 'quantile' ? 'Colors show quantile ranks across the whole file, not the size of logLk differences.' : 'Color limits use the whole file and stay fixed during playback.';
+  const likelihoodBackground = () => $('metric').value === 'loglk';
+  function updatePresentation() {
+    const likelihood = likelihoodBackground(), surface = $('surface').value;
+    for (const option of $('contrast').options) {
+      const unavailable = likelihood ? option.value === 'log' : option.value === 'focus';
+      option.hidden = unavailable; option.disabled = unavailable;
+    }
+    if ($('contrast').selectedOptions[0].disabled) $('contrast').value = 'quantile';
+    $('legend-title').textContent = likelihood ? 'logLk' : 'Points/cell';
+    $('legend').hidden = surface === 'none';
+    $('surface-note').textContent = surface === 'none' ? 'Hover over a point for its logLk and the best result in its cell.' : likelihood
+      ? 'Colors show the best visible logLk in each cell. Untested cells are gray.' + (surface === 'smooth' ? ' Contours show point density.' : '')
+      : 'Colors show the number of visible tested points in each cell. Blue: fewer points; red: more points.';
+    $('map-caption').textContent = surface === 'none' ? 'm ∈ [0, 1], l ∈ ℕ⁺. Showing tested points.' : likelihood
+      ? 'Color: best logLk per cell.' + (surface === 'smooth' ? ' Contours: density of tested points.' : '')
+      : 'Color: density of tested points.' + (surface === 'smooth' ? ' Contours include sparse regions.' : '');
   }
-  for (const id of ['surface', 'contrast', 'points', 'resolution']) $(id).addEventListener('input', () => {
-    state.surfaceCache = null;
-    if (id === 'resolution') state.interpolatorCache = null;
+  function updateLegend() {
+    if (!state.data) {
+      $('legend-min').textContent = likelihoodBackground() ? 'min' : '0';
+      $('legend-mid').textContent = ''; $('legend-max').textContent = 'max';
+      document.querySelector('.colorbar').style.background = '';
+      $('scale-note').textContent = likelihoodBackground() ? 'Blue: lower logLk; red: higher logLk. Untested cells are gray.' : 'Blue: fewer points; red: more points. Each tested point contributes once to the density.';
+      return;
+    }
+    const colors = colorSettings();
+    $('legend-min').textContent = `${$('contrast').value === 'focus' && colors.low > densityReference().likelihoodScores.minZ ? '≤ ' : ''}${format(colors.low, 2)}`;
+    $('legend-mid').textContent = format(colors.middle, 2);
+    $('legend-max').textContent = format(colors.high, 2);
+    document.querySelector('.colorbar').style.background = colors.low === colors.high ? `rgb(${C.color(.5).join(',')})` : '';
+    $('scale-note').textContent = $('surface').value === 'none' ? 'Background hidden. Hover over points to inspect their results.' :
+      ($('contrast').value === 'quantile' ? (likelihoodBackground() ? 'Quantiles use the best logLk in each occupied cell across the whole file. ' : 'Quantiles use occupied cells in the whole file. ') : '') +
+      'Grid and color limits stay fixed during playback and zoom.';
+  }
+  for (const id of ['metric', 'surface', 'contrast', 'points', 'resolution']) $(id).addEventListener('input', () => {
     $('resolution-value').textContent = $('resolution').value;
-    $('surface-note').textContent = $('surface').value === 'smooth' ? 'Estimated logLk across the full grid. Beyond tested points, the colors are extrapolated.' : $('surface').value === 'cells' ? 'Best logLk in each cell. Untested cells are left blank.' : 'Only evaluated points are shown, colored by logLk.';
-    updateLegend(); scheduleDraw();
+    updatePresentation(); updateLegend(); scheduleDraw();
   });
-  $('log-y').addEventListener('change', () => { state.interpolatorCache = null; resetView(); scheduleDraw(); });
+  $('log-y').addEventListener('change', () => { resetView(); updateLegend(); scheduleDraw(); });
 
   const logY = () => $('log-y').checked;
   function transformedY(y) { return logY() ? Math.log10(y) : y; }
   function initialView() {
     const d = state.data;
-    if (!d) return { x0: 0, x1: 1, y0: 0, y1: 200 };
+    if (!d) return { x0: 0, x1: 1, y0: 0, y1: logY() ? Math.log10(200) : 200 };
     const lo = transformedY(d.minY), hi = transformedY(d.maxY);
     const pad = Math.max((hi - lo) * .07, logY() ? .05 : 2);
     return { x0: 0, x1: 1, y0: logY() ? Math.max(-.05, lo - pad) : Math.max(0, Math.floor(lo - pad)), y1: hi + pad };
   }
-  function resetView() { state.view = initialView(); state.surfaceCache = null; }
+  function resetView() { state.view = initialView(); }
   $('reset-view').addEventListener('click', () => { resetView(); scheduleDraw(); });
   $('zoom-in').addEventListener('click', () => zoom(.7));
   $('zoom-out').addEventListener('click', () => zoom(1.4));
@@ -332,12 +350,12 @@
     const v = state.view, cx = v.x0 + px * (v.x1 - v.x0), cy = v.y0 + py * (v.y1 - v.y0);
     const dx = (v.x1 - v.x0) * factor, dy = (v.y1 - v.y0) * factor;
     state.view = clampView({ x0: cx - px * dx, x1: cx + (1 - px) * dx, y0: cy - py * dy, y1: cy + (1 - py) * dy });
-    state.surfaceCache = null; scheduleDraw();
+    scheduleDraw();
   }
   function fit(canvas) {
     const box = canvas.getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio || 1, 2);
     const w = Math.max(1, box.width), h = Math.max(1, box.height);
-    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); state.surfaceCache = null; }
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
     const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
     return { ctx, w, h };
   }
@@ -355,120 +373,159 @@
     renderPending = true;
     requestAnimationFrame(() => { renderPending = false; drawMap(); drawConvergence(); });
   }
-  function heatSurface(bounds) {
-    if (state.surfaceCache) return state.surfaceCache;
-    const nx = Number($('resolution').value), ny = Math.max(15, Math.round(nx * bounds.h / bounds.w));
-    const smooth = $('surface').value === 'smooth', scale = smooth ? 3 : 1;
-    const v = state.view;
-    let grid, field;
-    if (smooth) {
-      if (!state.interpolatorCache) {
-        const y0 = transformedY(state.data.minY);
-        const span = Math.max(transformedY(state.data.maxY) - y0, logY() ? .1 : 1);
-        function* samples() {
-          for (const p of state.visible) yield { x: p.x, y: (transformedY(p.y) - y0) / span, z: p.z };
-        }
-        state.interpolatorCache = { y0, span, estimate: C.makeInterpolator(samples(), { bins: nx * 2 }) };
-      }
-      field = state.interpolatorCache;
-    } else {
-      grid = new Float64Array(nx * ny); grid.fill(NaN);
-      for (const p of state.visible) {
-        const fx = (p.x - v.x0) / (v.x1 - v.x0), fy = (transformedY(p.y) - v.y0) / (v.y1 - v.y0);
-        if (fx < 0 || fx > 1 || fy < 0 || fy > 1) continue;
-        const ix = Math.min(nx - 1, Math.floor(fx * nx)), iy = Math.min(ny - 1, Math.floor((1 - fy) * ny));
-        const index = iy * nx + ix;
-        if (Number.isNaN(grid[index]) || p.z > grid[index]) grid[index] = p.z;
-      }
+  function densityReference() {
+    const nx = Number($('resolution').value), ny = Math.max(15, Math.round(nx * .6));
+    const cached = state.densityCache;
+    if (cached && cached.data === state.data && cached.nx === nx && cached.log === logY()) return cached;
+    const full = initialView(), y0 = logY() ? 10 ** full.y0 : full.y0, y1 = logY() ? 10 ** full.y1 : full.y1;
+    // Anchor bins to the whole file, so zooming and playback cannot move them.
+    // The tiny extra width keeps points on the upper edge in the final bin.
+    const dx = 1 / nx * (1 + 1e-9), dy = (y1 - y0) / ny * (1 + 1e-9);
+    const counts = new Uint32Array(nx * ny), bestScores = new Float64Array(nx * ny);
+    bestScores.fill(-Infinity);
+    for (const p of state.data.points) {
+      const ix = Math.min(nx - 1, Math.floor(p.x / dx));
+      const iy = Math.min(ny - 1, Math.floor((p.y - y0) / dy));
+      const index = iy * nx + ix;
+      counts[index]++; bestScores[index] = Math.max(bestScores[index], p.z);
     }
-    const off = document.createElement('canvas'); off.width = nx * scale; off.height = ny * scale;
-    const ctx = off.getContext('2d'), pixels = ctx.createImageData(off.width, off.height), mode = $('contrast').value;
-    for (let y = 0; y < off.height; y++) {
-      for (let x = 0; x < off.width; x++) {
-        let z;
-        if (smooth) {
-          const px = v.x0 + (x + .5) / off.width * (v.x1 - v.x0);
-          const py = v.y1 - (y + .5) / off.height * (v.y1 - v.y0);
-          z = field.estimate(px, (py - field.y0) / field.span);
-        } else z = grid[y * nx + x];
-        if (Number.isNaN(z)) continue;
-        const rgb = C.color(C.fraction(z, state.data, mode)), index = (y * off.width + x) * 4;
-        pixels.data[index] = rgb[0]; pixels.data[index + 1] = rgb[1]; pixels.data[index + 2] = rgb[2]; pixels.data[index + 3] = smooth ? 255 : 165;
-      }
-    }
-    ctx.putImageData(pixels, 0, 0); state.surfaceCache = off; return off;
+    const sortedZ = Array.from(counts).filter(n => n > 0).sort((a, b) => a - b);
+    const likelihoodZ = Array.from(bestScores).filter(Number.isFinite).sort((a, b) => a - b);
+    state.densityCache = {
+      data: state.data, nx, ny, log: logY(),
+      xbins: { start: 0, end: 1, size: dx }, ybins: { start: y0, end: y1, size: dy },
+      scores: { minZ: 0, maxZ: sortedZ[sortedZ.length - 1], sortedZ },
+      likelihoodScores: { minZ: likelihoodZ[0], maxZ: likelihoodZ[likelihoodZ.length - 1], sortedZ: likelihoodZ }
+    };
+    return state.densityCache;
   }
-  function star(ctx, x, y, r = 10) {
-    ctx.beginPath();
-    for (let i = 0; i < 10; i++) {
-      const a = i * Math.PI / 5 - Math.PI / 2, radius = i % 2 ? r * .42 : r;
-      const sx = x + Math.cos(a) * radius, sy = y + Math.sin(a) * radius;
-      if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+  function densityGrid() {
+    const { nx, ny, xbins, ybins } = densityReference();
+    const z = Array.from({ length: ny }, () => Array(nx).fill(0));
+    const best = Array.from({ length: ny }, () => Array(nx).fill(null));
+    for (const p of state.visible) {
+      const ix = Math.min(nx - 1, Math.floor((p.x - xbins.start) / xbins.size));
+      const iy = Math.min(ny - 1, Math.floor((p.y - ybins.start) / ybins.size));
+      z[iy][ix]++;
+      if (!best[iy][ix] || p.z > best[iy][ix].z) best[iy][ix] = p;
     }
-    ctx.closePath(); ctx.fillStyle = '#ae332f'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5; ctx.fill(); ctx.stroke();
+    return {
+      x: Array.from({ length: nx }, (_, i) => xbins.start + (i + .5) * xbins.size),
+      y: Array.from({ length: ny }, (_, i) => ybins.start + (i + .5) * ybins.size), z, best,
+      details: z.map((row, iy) => row.map((n, ix) => {
+        const point = best[iy][ix];
+        return [n, point ? format(point.z, 6) : '—', generationText(point)];
+      }))
+    };
+  }
+  function densityContours(grid) {
+    const max = densityReference().scores.maxZ;
+    const start = Math.log1p(.5), end = Math.log1p(max);
+    const levels = Math.min(12, Math.max(1, Math.ceil(Math.log2(max + 1))));
+    // Include sparse regions even when another cell is much denser.
+    return {
+      x: grid.x, y: grid.y, z: grid.z.map(row => row.map(n => Math.log1p(n))),
+      type: 'contour', name: 'Density contours', meta: 'density-contours',
+      autocontour: false,
+      contours: { coloring: 'none', start, end, size: levels > 1 ? (end - start) / (levels - 1) : 1 },
+      line: { color: 'rgba(30,48,65,0.5)', width: .8, smoothing: .7 },
+      hoverinfo: 'skip', showscale: false, showlegend: false
+    };
+  }
+  function colorSettings() {
+    if (!state.data) return { min: 0, max: 1, colorscale: [[0, '#2c5fba'], [1, '#b7303c']] };
+    const reference = densityReference(), mode = $('contrast').value;
+    const d = likelihoodBackground() ? reference.likelihoodScores : reference.scores;
+    const low = mode === 'focus' ? Math.max(d.minZ, d.maxZ - 10) : d.minZ, high = d.maxZ;
+    const middle = mode === 'quantile' ? d.sortedZ[Math.floor((d.sortedZ.length - 1) / 2)] : mode === 'log' ? Math.sqrt(1 + high) - 1 : (low + high) / 2;
+    if (low === high) {
+      const color = `rgb(${C.color(.5).join(',')})`;
+      return { min: low - .5, max: high + .5, low, high, middle, colorscale: [[0, color], [1, color]] };
+    }
+    const fraction = n => mode === 'log' ? Math.log1p(n) / Math.log1p(high) : C.fraction(n, d, mode);
+    const values = mode === 'quantile'
+      ? Array.from({ length: 257 }, (_, i) => d.sortedZ[Math.round(i / 256 * (d.sortedZ.length - 1))])
+      : Array.from({ length: 257 }, (_, i) => low + i / 256 * (high - low));
+    const stops = new Map([low, ...values, high].map(n => [(n - low) / (high - low), `rgb(${C.color(fraction(n)).join(',')})`]));
+    return { min: low, max: high, low, high, middle, colorscale: [...stops].sort((a, b) => a[0] - b[0]) };
+  }
+  const escapeHTML = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  function generationText(point) { return point && !state.data.noGenerations ? escapeHTML(point.generation) : '—'; }
+  function cellDetails(grid, row, column) { return grid.details[row][column]; }
+  function pointTrace(points, marker, name, grid) {
+    const { nx, ny, xbins, ybins } = densityReference();
+    return {
+      type: state.visible.length > 5000 ? 'scattergl' : 'scatter', mode: 'markers', name, meta: 'evaluated',
+      x: points.map(p => p.x), y: points.map(p => p.y),
+      customdata: points.map(p => {
+        const ix = Math.min(nx - 1, Math.floor((p.x - xbins.start) / xbins.size));
+        const iy = Math.min(ny - 1, Math.floor((p.y - ybins.start) / ybins.size));
+        return [p.z, generationText(p), p.row, ...cellDetails(grid, iy, ix)];
+      }),
+      marker, showlegend: false,
+      hovertemplate: `m: %{x:.6g}<br>l: %{y:,.0f}<br>logLk: %{customdata[0]:.6f}<br>${state.data.synthetic ? 'Step' : 'Generation'}: %{customdata[1]}<br><br>Tested points in cell: %{customdata[3]:,d}<br>Best logLk in cell: %{customdata[4]}<br>Best in ${state.data.synthetic ? 'step' : 'generation'}: %{customdata[5]}<extra></extra>`
+    };
   }
   function drawMap() {
-    const { ctx, w, h } = fit($('map'));
-    const bounds = { x: w < 500 ? 55 : 65, y: 20, w: w - (w < 500 ? 75 : 88), h: h - 72 };
-    const v = state.view;
-    const sx = x => bounds.x + (x - v.x0) / (v.x1 - v.x0) * bounds.w;
-    const sy = y => bounds.y + bounds.h - (transformedY(y) - v.y0) / (v.y1 - v.y0) * bounds.h;
-    plot = { ...bounds, sx, sy };
-    ctx.fillStyle = '#fff'; ctx.fillRect(bounds.x, bounds.y, bounds.w, bounds.h);
-    if (state.data && $('surface').value !== 'none') {
-      ctx.imageSmoothingEnabled = $('surface').value === 'smooth';
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(heatSurface(bounds), bounds.x, bounds.y, bounds.w, bounds.h);
-    }
-    const xticks = ticks(v.x0, v.x1, w < 500 ? 4 : 8);
-    const yticks = logY() ? ticks(v.y0, v.y1, 6).map(t => 10 ** t) : ticks(v.y0, v.y1, 6);
-    ctx.font = '11px "Segoe UI", Arial, sans-serif'; ctx.lineWidth = 1;
-    ctx.strokeStyle = state.data && $('surface').value === 'smooth' ? 'rgba(25,39,55,0.18)' : '#e7e8ea';
-    ctx.fillStyle = '#626970';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-    for (const t of xticks) { const x = sx(t); ctx.beginPath(); ctx.moveTo(x, bounds.y); ctx.lineTo(x, bounds.y + bounds.h); ctx.stroke(); ctx.fillText(axisFormat(t), x, bounds.y + bounds.h + 10); }
-    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-    for (const t of yticks) { const y = sy(t); ctx.beginPath(); ctx.moveTo(bounds.x, y); ctx.lineTo(bounds.x + bounds.w, y); ctx.stroke(); ctx.fillText(axisFormat(t), bounds.x - 10, y); }
-    ctx.fillStyle = '#50575e'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillText('m · migration', bounds.x + bounds.w / 2, h - 4);
-    ctx.save(); ctx.translate(13, bounds.y + bounds.h / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(`l · population size${logY() ? ' (log)' : ''}`, 0, 0); ctx.restore();
-    ctx.strokeStyle = '#bfc4c8'; ctx.strokeRect(bounds.x, bounds.y, bounds.w, bounds.h);
-    state.screens = [];
-    if (!state.data) return;
-    ctx.save(); ctx.beginPath(); ctx.rect(bounds.x, bounds.y, bounds.w, bounds.h); ctx.clip();
-    const mode = $('contrast').value, showPoints = $('points').checked;
-    // Bucket draw calls by color to keep large imports interactive.
-    const buckets = Array.from({ length: 80 }, () => []), fresh = [];
-    for (const p of state.visible) {
-      const x = sx(p.x), y = sy(p.y);
-      if (x < bounds.x || x > bounds.x + bounds.w || y < bounds.y || y > bounds.y + bounds.h) continue;
-      const screen = { x, y, p }; state.screens.push(screen);
-      if (showPoints) {
-        buckets[Math.min(79, Math.max(0, Math.round(C.fraction(p.z, state.data, mode) * 79)))].push(screen);
-        if (p.gi === state.current) fresh.push(screen);
+    if (!window.Plotly) { $('plot-error').hidden = false; return; }
+    if (mapDrawing) { mapQueued = true; return; }
+    const traces = [], colors = colorSettings(), v = state.view;
+    if (state.data) {
+      const background = $('surface').value, grid = densityGrid();
+      if (background !== 'none') {
+        const likelihood = likelihoodBackground();
+        // Both metrics and hover details use the same bounded grid on either axis.
+        const heatmap = {
+          type: 'heatmap', name: likelihood ? 'Best logLk per cell' : 'Tested point density', meta: 'cells',
+          x: grid.x, y: grid.y, z: likelihood ? grid.best.map(row => row.map(p => p ? p.z : null)) : grid.z,
+          customdata: grid.z.map((row, iy) => row.map((_, ix) => cellDetails(grid, iy, ix))),
+          coloraxis: 'coloraxis', showlegend: false, hoverongaps: false,
+          hovertemplate: `m: %{x:.6g}<br>l: %{y:,.2f}<br>Tested points in cell: %{customdata[0]:,d}<br>Best logLk in cell: %{customdata[1]}<br>Best in ${state.data.synthetic ? 'step' : 'generation'}: %{customdata[2]}<extra></extra>`
+        };
+        if (!likelihood && background === 'smooth') Object.assign(heatmap, {
+          type: 'contour', autocontour: true, ncontours: 16,
+          contours: { coloring: 'heatmap' }, line: { width: 0 }
+        });
+        traces.push(heatmap);
+        if (background === 'smooth') traces.push(densityContours(grid));
       }
+      if ($('points').checked) {
+        const size = state.visible.length > 30000 ? 3 : state.visible.length > 5000 ? 4 : 6;
+        traces.push(pointTrace(state.visible, {
+          size, color: '#253e55', opacity: .45,
+          line: { color: '#173e47', width: state.visible.map(p => p.gi === state.current && state.data.groups[state.current].length < 6000 ? .8 : 0) }
+        }, 'Tested points', grid));
+      }
+      if (state.best) traces.push(pointTrace([state.best], { size: 16, symbol: 'star', color: '#ae332f', line: { color: '#fff', width: 1.5 } }, 'Best visible point', grid));
+      if (state.pinned) traces.push(pointTrace([state.pinned], { size: 16, symbol: 'circle-open', color: '#173d43', line: { width: 2 } }, 'Selected point', grid));
     }
-    if (showPoints) {
-      const radius = state.screens.length > 30000 ? 1 : state.screens.length > 5000 ? 1.5 : 2.4;
-      ctx.globalAlpha = .8;
-      buckets.forEach((bucket, i) => {
-        if (!bucket.length) return;
-        ctx.fillStyle = `rgb(${C.color(i / 79).join(',')})`; ctx.beginPath();
-        for (const s of bucket) { ctx.moveTo(s.x + radius, s.y); ctx.arc(s.x, s.y, radius, 0, Math.PI * 2); }
-        ctx.fill();
-      });
-      ctx.globalAlpha = .85; ctx.strokeStyle = '#173e47'; ctx.lineWidth = .7; ctx.beginPath();
-      // Dark outlines mark the newly tested generation without masking its logLk color.
-      if (fresh.length < 6000) for (const s of fresh) { ctx.moveTo(s.x + radius + .5, s.y); ctx.arc(s.x, s.y, radius + .5, 0, Math.PI * 2); }
-      ctx.stroke(); ctx.globalAlpha = 1;
-    }
-    const best = state.best;
-    if (best) star(ctx, sx(best.x), sy(best.y));
-    if (state.pinned) {
-      const p = state.pinned; ctx.beginPath(); ctx.arc(sx(p.x), sy(p.y), 8, 0, Math.PI * 2);
-      ctx.strokeStyle = '#173d43'; ctx.lineWidth = 2; ctx.stroke();
-    }
-    ctx.restore();
-    if (state.pinned) showTooltip(state.pinned, sx(state.pinned.x), sy(state.pinned.y), true);
+    const axis = { zeroline: false, showline: true, mirror: true, linecolor: '#bfc4c8', gridcolor: 'rgba(25,39,55,0.14)', automargin: true, tickfont: { size: 11 }, fixedrange: !state.data };
+    const layout = {
+      autosize: true, width: $('map').clientWidth, height: $('map').clientHeight,
+      margin: { l: 65, r: 22, t: 35, b: 55 }, paper_bgcolor: '#fff', plot_bgcolor: likelihoodBackground() && $('surface').value !== 'none' ? '#e8ecef' : '#fff',
+      font: { family: '"Segoe UI", Arial, sans-serif', size: 12, color: '#50575e' },
+      dragmode: 'pan', hovermode: 'closest', showlegend: false,
+      xaxis: { ...axis, title: { text: 'm · migration', standoff: 12 }, type: 'linear', range: [v.x0, v.x1], autorange: false },
+      yaxis: { ...axis, title: { text: `l · population size${logY() ? ' (log)' : ''}`, standoff: 12 }, type: logY() ? 'log' : 'linear', range: [v.y0, v.y1], autorange: false },
+      coloraxis: { cauto: false, cmin: colors.min, cmax: colors.max, colorscale: colors.colorscale, showscale: false },
+      hoverlabel: { bgcolor: '#fff', bordercolor: '#92989e', font: { color: '#292c30', size: 12 } }
+    };
+    mapDrawing = true;
+    // Serialize renders: playback and refresh can arrive while Plotly is drawing.
+    Promise.resolve().then(() => Plotly.react($('map'), traces, layout, {
+      displaylogo: false, scrollZoom: true, doubleClick: 'reset', responsive: false,
+      modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d', 'resetScale2d'],
+      toImageButtonOptions: { format: 'png', filename: 'ibdestim-parameter-space', scale: 2 }
+    })).then(() => {
+      if (!plotReady) { bindPlotEvents(); plotReady = true; }
+      $('plot-error').hidden = true;
+      if (state.pinned) showTooltip(state.pinned);
+    }).catch(error => {
+      message(`Could not draw the Plotly figure: ${error.message}`, true);
+    }).finally(() => {
+      mapDrawing = false;
+      if (mapQueued) { mapQueued = false; scheduleDraw(); }
+    });
   }
   function drawConvergence() {
     const { ctx, w, h } = fit($('convergence'));
@@ -496,68 +553,38 @@
     $('convergence').setAttribute('aria-label', `Running maximum logLk: ${values[index]}, at generation ${data.generations[index]}.`);
   }
 
-  function pointAt(x, y) {
-    if (!plot || x < plot.x || x > plot.x + plot.w || y < plot.y || y > plot.y + plot.h) return null;
-    let best = null, distance = 100;
-    for (const s of state.screens) {
-      const d = (s.x - x) ** 2 + (s.y - y) ** 2;
-      // On overlapping coordinates, prefer the greatest likelihood.
-      if (d < distance || (d === distance && best && s.p.z > best.p.z)) { best = s; distance = d; }
-    }
-    return best;
-  }
   function hideTooltip() { $('tooltip').hidden = true; }
-  function showTooltip(p, x, y, pinned = false) {
+  function showTooltip(p) {
     const tooltip = $('tooltip'); tooltip.replaceChildren();
-    const title = document.createElement('strong'); title.textContent = pinned ? 'Selected point' : 'Evaluated point'; tooltip.append(title);
+    const title = document.createElement('strong'); title.textContent = 'Selected point'; tooltip.append(title);
     for (const [label, value] of [['m', raw(p.x)], ['l', raw(p.y)], ['logLk', raw(p.z)], [state.data.synthetic ? 'Step' : 'Generation', state.data.noGenerations ? '—' : p.generation]]) {
       const line = document.createElement('div'), key = document.createElement('span'); key.textContent = label;
       line.append(key, document.createTextNode(value)); tooltip.append(line);
     }
-    const note = document.createElement('small'); note.textContent = pinned ? 'Click empty space or press Esc to clear' : 'Click to keep selected'; tooltip.append(note);
+    const note = document.createElement('small'); note.textContent = 'Click the selected point again or press Esc to clear'; tooltip.append(note);
     tooltip.hidden = false;
-    tooltip.style.left = `${Math.max(4, Math.min(x + 15, $('plot-wrap').clientWidth - tooltip.offsetWidth - 5))}px`;
-    tooltip.style.top = `${Math.max(4, Math.min(y + 10, $('plot-wrap').clientHeight - tooltip.offsetHeight - 5))}px`;
   }
-  const coords = e => { const rect = $('map').getBoundingClientRect(); return { x: e.clientX - rect.left, y: e.clientY - rect.top }; };
-  $('map').addEventListener('pointerdown', e => {
-    if (e.button !== 0 || !state.data) return;
-    const p = coords(e); if (!plot || p.x < plot.x || p.x > plot.x + plot.w || p.y < plot.y || p.y > plot.y + plot.h) return;
-    pointer = { ...p, view: { ...state.view } }; moved = false;
-    $('map').setPointerCapture(e.pointerId);
-  });
-  $('map').addEventListener('pointermove', e => {
-    const p = coords(e);
-    if (pointer) {
-      const dx = p.x - pointer.x, dy = p.y - pointer.y;
-      if (Math.abs(dx) + Math.abs(dy) > 4) moved = true;
-      if (moved) {
-        const v = pointer.view, tx = dx / plot.w * (v.x1 - v.x0), ty = dy / plot.h * (v.y1 - v.y0);
-        state.view = clampView({ x0: v.x0 - tx, x1: v.x1 - tx, y0: v.y0 + ty, y1: v.y1 + ty });
-        state.surfaceCache = null; $('map').style.cursor = 'grabbing'; hideTooltip(); scheduleDraw();
-      }
-      return;
-    }
-    if (!state.pinned) { const hit = pointAt(p.x, p.y); if (hit) showTooltip(hit.p, hit.x, hit.y); else hideTooltip(); }
-  });
-  $('map').addEventListener('pointerup', e => {
-    if (!pointer) return;
-    const p = coords(e);
-    if (!moved) {
-      const hit = pointAt(p.x, p.y); state.pinned = hit ? hit.p : null;
-      if (!hit) hideTooltip(); scheduleDraw();
-    }
-    pointer = null; $('map').style.cursor = 'crosshair';
-  });
-  $('map').addEventListener('pointercancel', () => { pointer = null; $('map').style.cursor = 'crosshair'; });
-  $('map').addEventListener('pointerleave', () => { if (!state.pinned) hideTooltip(); });
-  $('map').addEventListener('dblclick', () => { resetView(); scheduleDraw(); });
-  $('map').addEventListener('wheel', e => {
-    if (!state.data || !plot) return;
-    const p = coords(e);
-    if (p.x < plot.x || p.x > plot.x + plot.w || p.y < plot.y || p.y > plot.y + plot.h) return;
-    e.preventDefault(); zoom(Math.exp(Math.max(-.35, Math.min(.35, e.deltaY * .0015))), (p.x - plot.x) / plot.w, 1 - (p.y - plot.y) / plot.h);
-  }, { passive: false });
+  function bindPlotEvents() {
+    const map = $('map');
+    map.on('plotly_click', event => {
+      const hit = event.points.find(p => p.data.meta === 'evaluated');
+      if (!hit) { state.pinned = null; hideTooltip(); scheduleDraw(); return; }
+      const point = state.visible.find(p => p.row === hit.customdata[2]);
+      state.pinned = point === state.pinned ? null : point;
+      if (!state.pinned) hideTooltip();
+      scheduleDraw();
+    });
+    map.on('plotly_relayout', event => {
+      if (mapDrawing) return;
+      if (event['xaxis.autorange'] || event['yaxis.autorange']) { resetView(); scheduleDraw(); return; }
+      const range = axis => event[`${axis}.range`] || [event[`${axis}.range[0]`], event[`${axis}.range[1]`]];
+      const x = range('xaxis'), y = range('yaxis'), v = state.view;
+      if (![...x, ...y].some(Number.isFinite)) return;
+      state.view = clampView({ x0: x[0] ?? v.x0, x1: x[1] ?? v.x1, y0: y[0] ?? v.y0, y1: y[1] ?? v.y1 });
+      scheduleDraw();
+    });
+    map.on('plotly_doubleclick', () => { resetView(); scheduleDraw(); return false; });
+  }
   $('map').addEventListener('keydown', e => {
     if (e.key === 'Escape') { state.pinned = null; hideTooltip(); scheduleDraw(); }
     if (e.key === '+' || e.key === '=') { e.preventDefault(); zoom(.7); }
@@ -583,5 +610,5 @@
   if (window.matchMedia('(max-width: 760px)').matches) $('plot-settings').open = false;
   new ResizeObserver(scheduleDraw).observe($('plot-wrap'));
   new ResizeObserver(scheduleDraw).observe(document.querySelector('.convergence-wrap'));
-  scheduleDraw();
+  updatePresentation(); updateLegend(); scheduleDraw();
 })();

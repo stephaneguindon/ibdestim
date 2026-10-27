@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="light">
   <title>IBDestim — Likelihood explorer</title>
   <link rel="stylesheet" href="styles.css">
+  <script defer src="https://cdn.plot.ly/plotly-4.1.1.min.js" charset="utf-8"></script>
   <script defer src="core.js"></script>
   <script defer src="app.js"></script>
 </head>
@@ -48,9 +49,10 @@
         </section>
         <details class="settings" id="plot-settings" open>
           <summary>Plot settings</summary>
-          <label>Background<select id="surface"><option value="smooth" selected>Interpolated surface</option><option value="cells">Observed cells</option><option value="none">Points only</option></select></label>
-          <p class="hint" id="surface-note">Estimated logLk across the full grid. Beyond tested points, the colors are extrapolated.</p>
-          <label>Color scale<select id="contrast"><option value="linear">Linear (min to max)</option><option value="quantile" selected>Quantiles</option><option value="focus">Within 10 of the maximum</option></select></label>
+          <label>Background<select id="metric"><option value="loglk" selected>logLk</option><option value="density">Density</option></select></label>
+          <label>Display<select id="surface"><option value="smooth" selected>Contours + heatmap</option><option value="cells">Heatmap only</option><option value="none">Points only</option></select></label>
+          <p class="hint" id="surface-note">Colors show the best visible logLk in each cell. Contours show point density. Untested cells are gray.</p>
+          <label>Color scale<select id="contrast"><option value="linear">Linear</option><option value="quantile" selected>Quantiles</option><option value="focus">Within 10 of the maximum</option><option value="log" hidden disabled>Logarithmic (point count)</option></select></label>
           <div class="setting-line"><label for="points">Show tested points</label><input id="points" type="checkbox" checked></div>
           <div class="setting-line"><label for="log-y">Logarithmic l-axis</label><input id="log-y" type="checkbox"></div>
           <label>Grid resolution <span id="resolution-value" class="label-value">70</span><input id="resolution" type="range" min="25" max="130" value="70" step="5"></label>
@@ -63,7 +65,7 @@
             </div>
           </details>
         </details>
-        <p class="reading-key">A star marks the best visible point. Hover for values, or click to keep a point selected.</p>
+        <p class="reading-key">Contours show where the search concentrates. A star marks the best visible logLk. Hover over a cell for its count and best result, or click a point to keep it selected.</p>
       </aside>
       <div class="main-column">
         <section class="stats" aria-label="Visible results">
@@ -73,7 +75,7 @@
         </section>
         <section class="card map-card">
           <div class="card-heading">
-            <div><h2>Parameter space <span id="data-badge" class="badge">No data</span></h2><p id="map-caption">m ∈ [0, 1], l ∈ ℕ⁺. Color shows logLk.</p></div>
+            <div><h2>Parameter space <span id="data-badge" class="badge">No data</span></h2><p id="map-caption">Color: best logLk per cell. Contours: density of tested points.</p></div>
             <div class="plot-actions">
               <button id="zoom-in" class="icon-button" title="Zoom in" aria-label="Zoom in">+</button>
               <button id="zoom-out" class="icon-button" title="Zoom out" aria-label="Zoom out">−</button>
@@ -81,15 +83,16 @@
             </div>
           </div>
           <div class="plot-wrap" id="plot-wrap">
-            <canvas id="map" role="img" aria-label="Tested points: m on the x-axis, l on the y-axis, colored by logLk" tabindex="0"></canvas>
+            <div id="map" role="region" aria-label="LogLk and density of tested points: m on the x-axis, l on the y-axis" tabindex="0"></div>
             <div id="empty" class="empty"><strong>No results loaded</strong><p>Choose a results file or drop it into the file area.</p></div>
+            <div id="plot-error" class="empty" role="alert" hidden><strong>Plotly could not load</strong><p>Check your internet connection and reload the page.</p></div>
             <div id="tooltip" class="tooltip" hidden></div>
           </div>
           <div class="map-footer">
-            <span class="plot-help">Scroll to zoom. Drag to pan. Double-click to reset.</span>
-            <div class="legend"><span>logLk</span><div><div class="colorbar"></div><div class="legend-values"><span id="legend-min">min</span><span id="legend-mid"></span><span id="legend-max">max</span></div></div></div>
+            <span class="plot-help">Scroll to zoom. Drag to pan. Double-click to reset. Use the toolbar to save an image.</span>
+            <div class="legend" id="legend"><span id="legend-title">logLk</span><div><div class="colorbar"></div><div class="legend-values"><span id="legend-min">min</span><span id="legend-mid"></span><span id="legend-max">max</span></div></div></div>
           </div>
-          <p class="scale-note" id="scale-note">Color limits use the whole file and stay fixed during playback.</p>
+          <p class="scale-note" id="scale-note">Blue: lower logLk; red: higher logLk. Untested cells are gray.</p>
         </section>
         <section class="timeline-card">
           <div class="card-heading">
