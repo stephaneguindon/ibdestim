@@ -79,9 +79,12 @@
     if (generations.every(v => Number.isFinite(number(v)))) generations.sort((a, b) => number(a) - number(b));
     const indices = new Map(generations.map((g, i) => [g, i]));
     const groups = generations.map(() => []);
-    let minZ = Infinity, maxZ = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const p of points) {
       p.gi = indices.get(p.generation); groups[p.gi].push(p);
+    }
+    const evaluatedCounts = groups.map(group => group.length), evaluatedCount = points.length;
+    let minZ = Infinity, maxZ = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of points) {
       minZ = Math.min(minZ, p.z); maxZ = Math.max(maxZ, p.z); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
     }
     let best = null;
@@ -92,8 +95,14 @@
     // Deterministic reservoir-sized sample limits sort cost for very large imports.
     const stride = Math.max(1, Math.ceil(points.length / 100000));
     const sortedZ = points.filter((_, i) => i % stride === 0).map(p => p.z).sort((a, b) => a - b);
-    return { points, generations, groups, progress, minZ, maxZ, minY, maxY, sortedZ, rejected,
+    return { points, generations, groups, evaluatedCounts, evaluatedCount, progress, minZ, maxZ, minY, maxY, sortedZ, rejected,
       synthetic: g < 0 && Boolean(options.rowOrder), noGenerations: g < 0 && !options.rowOrder };
+  }
+  function topLikelihood(points) {
+    const keepCount = Math.ceil(points.length * .8);
+    if (keepCount === points.length) return [...points];
+    const retained = new Set([...points].sort((a, b) => b.z - a.z || a.row - b.row).slice(0, keepCount));
+    return points.filter(p => retained.has(p));
   }
   function lowerBound(array, value) {
     let lo = 0, hi = array.length;
@@ -176,7 +185,7 @@
       return estimate;
     };
   }
-  const api = { parse, prepare, infer, number, fraction, color, topDistinct, makeInterpolator };
+  const api = { parse, prepare, infer, number, fraction, color, topDistinct, topLikelihood, makeInterpolator };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.IBD = api;
 })(typeof window === 'undefined' ? this : window);

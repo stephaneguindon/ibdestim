@@ -98,12 +98,13 @@ def ibd_lk_one_pair(p):
 			- (2 * np.pi * m * lambda_)
 			/ (2 * np.pi * m * lambda_ + L * (euler_gamma + np.log(l**2)))
 		)
-		time = rate * np.exp(-rate * t)
+	# rate = 1 / l**2
+	time = rate * np.exp(-rate * t)
 
 		# if np.isinf(np.log(space)) or np.isinf(np.log(time)):
 		# 	print(f" *  m= {m} l= {l}")
 
-		if space > 0 and time > 0:
+	if space > 0 and time > 0:
 			return float(np.log(space) + np.log(time))
 	return -1e20
 
@@ -125,6 +126,11 @@ parser.add_argument("--output-file", "--output_file", default="/tmp/ibd_results.
                     help="path to the output file (default: /tmp/ibd_results.txt)")
 parser.add_argument("--n-subsamples", "--subsample_size", type=int, default=100,
                     help="subsample size (default: 100)")
+parser.add_argument("--l_max", "--max_l", type=float, default=150,
+                    help="maximum population size (default: 150)")
+parser.add_argument("--l_min", "--min_l", type=float, default=10,
+                    help="minimum population size (default: 10)")
+
 args = parser.parse_args()
 
 input_file = args.input_file
@@ -164,15 +170,9 @@ data = data.loc[:(subsample_size - 1)]
 
 # data = data.sample(n=subsample_size)
 
-m = np.arange(0.01, 1.0, 0.1)
-l = np.arange(15, 200, 10)
-
-# crop m and l so that their lengths are even numbers
-lenm = len(m)
-lenl = len(l)
-
-m = m[0:(lenm // 2) * 2]
-l = l[0:(lenl // 2) * 2]
+m = np.linspace(0.01, 1.0, 10)
+l = np.linspace(args.l_min, args.l_max, 10)
+l = np.round(l,0)
 
 lenm = len(m)
 lenl = len(l)
@@ -183,7 +183,7 @@ lk = np.zeros((lenm*lenl))
 
 for i in range(len(m)):
   lk[i] = ibd_lk((m[i],l[i]),data)
-  print(f"Pre-calculation step... m={m[i]:.2f} l={l[i]} lk={lk[i]}", end="\r")
+  print(f"Pre-calculation step... m={m[i]:.2f} l={int(l[i])} lk={lk[i]:.2f}", end="\r")
 
 # rank the values of lk in decreasing order and save the corresponding values of m and l
 sorted_indices = (-lk).argsort()
@@ -192,33 +192,32 @@ m = m[sorted_indices]
 l = l[sorted_indices]
 
 iter = 0
+keep_frac = 0.8;
 
-while(lk[0] - lk[int(0.8*len(lk))] > 1):
+while(lk[0] - lk[int(keep_frac*len(lk))] > 1):
   iter += 1
 
   # Save results to file
   with open(output_file, "a") as f:
     if(iter == 1): f.write("iter m l lk\n")
     for i in range(len(m)):
-      f.write(f"{iter} {m[i]:.2f} {l[i]:.2f} {lk[i]:.2f}\n")
+      f.write(f"{iter} {m[i]} {l[i]} {lk[i]}\n")
     f.close
   
-  
-  # populate the last half of m and l with noisy values of the first half
-  m[int(0.5*len(m)):len(m)] = m[0:int(0.5*len(m))] + np.random.normal(0, m[0:int(0.5*len(m))]/10, len(m) - int(0.5*len(m)))
-  m = np.maximum(m, 0.05)
-	# set maximum value of m to 1.00
-  m = np.minimum(m, 1.00)
+  for i in range(int(keep_frac*len(m)),len(m),1):
+    ref = np.random.randint(0,int(keep_frac*len(m)))
+    # ref = np.random.randint(0,(1-keep_frac)*len(m))
+    m[i] = m[ref] + np.random.normal(0, m[ref]/10)
+    l[i] = l[ref] + np.random.normal(0, l[ref]/10)
+		
+    m[i] = np.maximum(m[i], 0.01)
+    m[i] = np.minimum(m[i], 1.00)
 
-  # do the same for l
-  l[int(0.5*len(l)):len(l)] = l[0:int(0.5*len(l))] + np.random.normal(0, l[0:int(0.5*len(l))]/10, len(l) - int(0.5*len(l)))	
-  l = l.astype(int)
-  # set minimum value of l to 10
-  l = np.maximum(l, 15)
-	
-  # compute lk for the new values of m and l
-  for i in range(len(m)):
+    l[i] = l[i].astype(int)
+    l[i] = np.maximum(l[i], 10)
+
     lk[i] = ibd_lk((m[i],l[i]),data)
+	
   
   # rank the values of lk in decreasing order and save the corresponding values of m and l
   sorted_indices = (-lk).argsort()
@@ -226,5 +225,5 @@ while(lk[0] - lk[int(0.8*len(lk))] > 1):
   m = m[sorted_indices]
   l = l[sorted_indices]
 
-	# print mean lk values and delta lk
-  print(f"Mean lk: {lk.mean():.2f} mean(m): {m.mean():.2f} mean(l): {l.mean():4.0f} delta lk: {(lk[0] - lk[int(0.8*len(lk))]):.2f}", end="\r")
+	# print optimal values of parameters	
+  print(f"Iter: {iter:5d} <> max. log(lk): {lk[0]:.2f} optimal m: {m[0]:.2f} optimal l: {l[0]:4.0f} delta log(lk): {(lk[0] - lk[int(0.8*len(lk))]):.2f}", end="\n")

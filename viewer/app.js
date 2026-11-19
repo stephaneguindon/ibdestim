@@ -36,7 +36,9 @@
       const data = C.prepare(parsed, columns, { rowOrder: $('row-order').checked, batch: $('batch-size').value });
       const previous = state.data, currentId = previous?.generations[state.current];
       const wasLatest = previous && state.current === previous.generations.length - 1;
-      const fullView = initialView(), wasFullView = Object.keys(fullView).every(key => Math.abs(state.view[key] - fullView[key]) < 1e-9);
+      const fullView = initialView();
+      fullView.y1 = generationYLimits(state.visible, previous).upper;
+      const wasFullView = Object.keys(fullView).every(key => Math.abs(state.view[key] - fullView[key]) < 1e-9);
       const pinned = state.pinned;
       stop(); state.data = data; state.pinned = null; hideTooltip();
       if (parsed !== state.parsed) { state.parsed = parsed; populateMapping(parsed, columns); }
@@ -52,7 +54,7 @@
       const notices = [];
       if (problems.length) notices.push(`Skipped: ${problems.join('; ')}.`);
       if (state.parsed.headerless) notices.push('No header found. Assuming m, l, logLk for three columns, or generation, m, l, logLk for four. Check the column mapping.');
-      if (data.noGenerations) notices.push('No generation column found. Showing all points together. You can use row order to create playback steps.');
+      if (data.noGenerations) notices.push('No generation column found. Showing the top 80% of valid points together. You can use row order to create playback steps.');
       if (data.synthetic) notices.push('Playback steps follow row order. They do not represent actual generations.');
       if (data.generations.some(v => !Number.isFinite(C.number(v)))) notices.push('Text generation IDs are shown in order of first appearance.');
       message(notices.join(' '));
@@ -228,18 +230,26 @@
 
   function update() {
     const d = state.data; if (!d) return;
-    state.visible = state.cumulative ? d.points.filter(p => p.gi <= state.current) : d.groups[state.current];
+    const evaluated = d.points.filter(p => p.gi <= state.current);
+    const topPoints = C.topLikelihood(evaluated);
+    state.visible = state.cumulative ? topPoints : topPoints.filter(p => p.gi === state.current);
+    const full = initialView(), { upper, padding } = generationYLimits(state.visible, d);
+    state.view.y1 = upper;
+    state.view.y0 = Math.min(state.view.y0, Math.max(full.y0, upper - Math.max(padding, 1e-7)));
 
-    const best = state.cumulative ? d.progress[state.current] : state.visible.reduce((a, p) => !a || p.z > a.z ? p : a, null);
+    const best = state.visible.reduce((a, p) => !a || p.z > a.z ? p : a, null);
     state.best = best;
-    $('stat-lk').textContent = format(best.z, 3);
-    $('stat-pair').replaceChildren(document.createTextNode(`m ${format(best.x, 5)} `), Object.assign(document.createElement('span'), { textContent: '/' }), document.createTextNode(` l ${format(best.y, 0)}`));
-    const delta = d.maxZ - best.z;
-    $('stat-delta').textContent = delta === 0 ? 'Matches the best in the file' : `Gap to file maximum: ${format(delta, 3)}`;
-    $('stat-best-gen').textContent = d.noGenerations ? 'For the best visible point' : `Evaluated in ${d.synthetic ? 'step' : 'generation'} ${best.generation}`;
+    $('stat-lk').textContent = format(best?.z, 3);
+    $('stat-pair').replaceChildren(document.createTextNode(`m ${format(best?.x, 5)} `), Object.assign(document.createElement('span'), { textContent: '/' }), document.createTextNode(` l ${format(best?.y, 0)}`));
+    $('stat-delta').textContent = !best ? 'No points retained for this generation' :
+      d.maxZ === best.z ? 'Matches the best in the file' : `Gap to file maximum: ${format(d.maxZ - best.z, 3)}`;
+    $('stat-best-gen').textContent = !best ? 'No retained point to show' :
+      d.noGenerations ? 'For the best visible point' : `Evaluated in ${d.synthetic ? 'step' : 'generation'} ${best.generation}`;
     $('stat-count').textContent = format(state.visible.length, 0);
     $('stat-total').textContent = `of ${format(d.points.length, 0)} valid points`;
-    $('generation-info').textContent = d.noGenerations ? 'No generation IDs. Showing all points.' : `${d.synthetic ? 'Step (from rows)' : 'Generation'} ${d.generations[state.current]} · ${count(d.groups[state.current].length, 'point')} evaluated · ${state.current + 1} / ${d.generations.length}`;
+    const evaluatedCount = d.evaluatedCounts.slice(0, state.current + 1).reduce((sum, n) => sum + n, 0);
+    $('generation-info').textContent = d.noGenerations ? 'No generation IDs. Showing the top 80% of valid points.' :
+      `${d.synthetic ? 'Step (from rows)' : 'Generation'} ${d.generations[state.current]} · ${state.cumulative ? `${format(state.visible.length, 0)} plotted of ${format(evaluatedCount, 0)} evaluated so far` : `${format(state.visible.length, 0)} current-generation points in cumulative top 80% · ${format(d.evaluatedCounts[state.current], 0)} evaluated this generation`} · ${state.current + 1} / ${d.generations.length}`;
     $('current-generation').textContent = d.noGenerations ? 'All points' : `${d.synthetic ? 'Step' : 'Generation'} ${d.generations[state.current]}`;
     $('generation').value = String(state.current);
     $('prev').disabled = state.current === 0;
@@ -253,7 +263,9 @@
       });
       return row;
     }));
-    $('map').setAttribute('aria-label', `${likelihoodBackground() ? 'LogLk and point density' : 'Point density'} for ${state.visible.length} visible tested points. Best logLk ${best.z}, at m ${best.x}, l ${best.y}.`);
+    $('map').setAttribute('aria-label', best ?
+      `${likelihoodBackground() ? 'LogLk and point density' : 'Point density'} for ${state.visible.length} visible tested points. Best logLk ${best.z}, at m ${best.x}, l ${best.y}.` :
+      `No points are in the cumulative top 80% for generation ${d.generations[state.current]}.`);
     if (state.pinned && !state.visible.includes(state.pinned)) { state.pinned = null; hideTooltip(); }
     updateLegend(); scheduleDraw();
   }
@@ -294,13 +306,16 @@
     }
     if ($('contrast').selectedOptions[0].disabled) $('contrast').value = 'quantile';
     $('legend-title').textContent = likelihood ? 'logLk' : 'Points/cell';
-    $('legend').hidden = surface === 'none';
-    $('surface-note').textContent = surface === 'none' ? 'Hover over a point for its logLk and the best result in its cell.' : likelihood
+    $('legend').hidden = surface === 'none' || surface === 'contours';
+    $('surface-note').textContent = surface === 'none' ? 'Hover over a point for its logLk and the best result in its cell.' :
+      surface === 'contours' ? 'Contours show the density of visible points; dots are colored by logLk.' : likelihood
       ? 'Colors show the best visible logLk in each cell. Untested cells are gray.' + (surface === 'smooth' ? ' Contours show point density.' : '')
       : 'Colors show the number of visible tested points in each cell. Blue: fewer points; red: more points.';
-    $('map-caption').textContent = surface === 'none' ? 'm ∈ [0, 1], l ∈ ℕ⁺. Showing tested points.' : likelihood
+    $('map-caption').textContent = (surface === 'none' ? 'm ∈ [0, 1], l ∈ ℕ⁺. Showing tested points.' :
+      surface === 'contours' ? 'Contours: density of visible tested points.' : likelihood
       ? 'Color: best logLk per cell.' + (surface === 'smooth' ? ' Contours: density of tested points.' : '')
-      : 'Color: density of tested points.' + (surface === 'smooth' ? ' Contours include sparse regions.' : '');
+      : 'Color: density of tested points.' + (surface === 'smooth' ? ' Contours include sparse regions.' : '')) +
+      ($('points').checked ? ' Dot color: logLk.' : '');
   }
   function updateLegend() {
     if (!state.data) {
@@ -316,14 +331,15 @@
     $('legend-max').textContent = format(colors.high, 2);
     document.querySelector('.colorbar').style.background = colors.low === colors.high ? `rgb(${C.color(.5).join(',')})` : '';
     $('scale-note').textContent = $('surface').value === 'none' ? 'Background hidden. Hover over points to inspect their results.' :
+      $('surface').value === 'contours' ? 'Dot colors show logLk. Contours show the density of visible points.' :
       ($('contrast').value === 'quantile' ? (likelihoodBackground() ? 'Quantiles use the best logLk in each occupied cell across the whole file. ' : 'Quantiles use occupied cells in the whole file. ') : '') +
       'Grid and color limits stay fixed during playback and zoom.';
   }
-  for (const id of ['metric', 'surface', 'contrast', 'points', 'resolution']) $(id).addEventListener('input', () => {
+  for (const id of ['metric', 'surface', 'contrast', 'points', 'show-best', 'resolution']) $(id).addEventListener('input', () => {
     $('resolution-value').textContent = $('resolution').value;
     updatePresentation(); updateLegend(); scheduleDraw();
   });
-  $('log-y').addEventListener('change', () => { resetView(); updateLegend(); scheduleDraw(); });
+  $('log-y').addEventListener('change', () => { resetView(); update(); });
 
   const logY = () => $('log-y').checked;
   function transformedY(y) { return logY() ? Math.log10(y) : y; }
@@ -334,8 +350,22 @@
     const pad = Math.max((hi - lo) * .07, logY() ? .05 : 2);
     return { x0: 0, x1: 1, y0: logY() ? Math.max(-.05, lo - pad) : Math.max(0, Math.floor(lo - pad)), y1: hi + pad };
   }
+  function generationYLimits(points, data) {
+    if (!data) {
+      const upper = logY() ? Math.log10(200) : 200;
+      return { upper, padding: 2 };
+    }
+    let min = Infinity, max = -Infinity;
+    for (const point of points) {
+      const y = transformedY(point.y);
+      min = Math.min(min, y); max = Math.max(max, y);
+    }
+    if (!points.length) { min = transformedY(data.minY); max = transformedY(data.maxY); }
+    const padding = Math.max((max - min) * .07, logY() ? .05 : 2);
+    return { upper: max + padding, padding };
+  }
   function resetView() { state.view = initialView(); }
-  $('reset-view').addEventListener('click', () => { resetView(); scheduleDraw(); });
+  $('reset-view').addEventListener('click', () => { resetView(); update(); });
   $('zoom-in').addEventListener('click', () => zoom(.7));
   $('zoom-out').addEventListener('click', () => zoom(1.4));
   function clampView(v) {
@@ -419,7 +449,7 @@
     };
   }
   function densityContours(grid) {
-    const max = densityReference().scores.maxZ;
+    const max = Math.max(1, grid.z.reduce((highest, row) => row.reduce((best, count) => Math.max(best, count), highest), 0));
     const start = Math.log1p(.5), end = Math.log1p(max);
     const levels = Math.min(12, Math.max(1, Math.ceil(Math.log2(max + 1))));
     // Include sparse regions even when another cell is much denser.
@@ -432,10 +462,13 @@
       hoverinfo: 'skip', showscale: false, showlegend: false
     };
   }
-  function colorSettings() {
+  function colorSettings(forLikelihood = likelihoodBackground(), points = null) {
     if (!state.data) return { min: 0, max: 1, colorscale: [[0, '#2c5fba'], [1, '#b7303c']] };
     const reference = densityReference(), mode = $('contrast').value;
-    const d = likelihoodBackground() ? reference.likelihoodScores : reference.scores;
+    const scores = points?.map(p => p.z).sort((a, b) => a - b);
+    const d = scores?.length
+      ? { minZ: scores[0], maxZ: scores[scores.length - 1], sortedZ: scores }
+      : forLikelihood ? reference.likelihoodScores : reference.scores;
     const low = mode === 'focus' ? Math.max(d.minZ, d.maxZ - 10) : d.minZ, high = d.maxZ;
     const middle = mode === 'quantile' ? d.sortedZ[Math.floor((d.sortedZ.length - 1) / 2)] : mode === 'log' ? Math.sqrt(1 + high) - 1 : (low + high) / 2;
     if (low === high) {
@@ -469,10 +502,10 @@
   function drawMap() {
     if (!window.Plotly) { $('plot-error').hidden = false; return; }
     if (mapDrawing) { mapQueued = true; return; }
-    const traces = [], colors = colorSettings(), v = state.view;
+    const traces = [], colors = colorSettings(), pointColors = colorSettings(true, state.visible), v = state.view;
     if (state.data) {
       const background = $('surface').value, grid = densityGrid();
-      if (background !== 'none') {
+      if (background !== 'none' && background !== 'contours') {
         const likelihood = likelihoodBackground();
         // Both metrics and hover details use the same bounded grid on either axis.
         const heatmap = {
@@ -487,16 +520,17 @@
           contours: { coloring: 'heatmap' }, line: { width: 0 }
         });
         traces.push(heatmap);
-        if (background === 'smooth') traces.push(densityContours(grid));
       }
+      if (background === 'smooth' || background === 'contours') traces.push(densityContours(grid));
       if ($('points').checked) {
-        const size = state.visible.length > 30000 ? 3 : state.visible.length > 5000 ? 4 : 6;
+        const size = state.visible.length > 30000 ? 7.5 : state.visible.length > 5000 ? 9 : 12;
         traces.push(pointTrace(state.visible, {
-          size, color: '#253e55', opacity: .45,
+          size, color: state.visible.map(p => p.z), cmin: pointColors.min, cmax: pointColors.max,
+          colorscale: pointColors.colorscale, showscale: false, opacity: .3,
           line: { color: '#173e47', width: state.visible.map(p => p.gi === state.current && state.data.groups[state.current].length < 6000 ? .8 : 0) }
         }, 'Tested points', grid));
       }
-      if (state.best) traces.push(pointTrace([state.best], { size: 16, symbol: 'star', color: '#ae332f', line: { color: '#fff', width: 1.5 } }, 'Best visible point', grid));
+      if ($('show-best').checked && state.best) traces.push(pointTrace([state.best], { size: 16, symbol: 'star', color: '#ae332f', line: { color: '#fff', width: 1.5 } }, 'Best visible point', grid));
       if (state.pinned) traces.push(pointTrace([state.pinned], { size: 16, symbol: 'circle-open', color: '#173d43', line: { width: 2 } }, 'Selected point', grid));
     }
     const axis = { zeroline: false, showline: true, mirror: true, linecolor: '#bfc4c8', gridcolor: 'rgba(25,39,55,0.14)', automargin: true, tickfont: { size: 11 }, fixedrange: !state.data };
@@ -576,20 +610,20 @@
     });
     map.on('plotly_relayout', event => {
       if (mapDrawing) return;
-      if (event['xaxis.autorange'] || event['yaxis.autorange']) { resetView(); scheduleDraw(); return; }
+      if (event['xaxis.autorange'] || event['yaxis.autorange']) { resetView(); update(); return; }
       const range = axis => event[`${axis}.range`] || [event[`${axis}.range[0]`], event[`${axis}.range[1]`]];
       const x = range('xaxis'), y = range('yaxis'), v = state.view;
       if (![...x, ...y].some(Number.isFinite)) return;
       state.view = clampView({ x0: x[0] ?? v.x0, x1: x[1] ?? v.x1, y0: y[0] ?? v.y0, y1: y[1] ?? v.y1 });
       scheduleDraw();
     });
-    map.on('plotly_doubleclick', () => { resetView(); scheduleDraw(); return false; });
+    map.on('plotly_doubleclick', () => { resetView(); update(); return false; });
   }
   $('map').addEventListener('keydown', e => {
     if (e.key === 'Escape') { state.pinned = null; hideTooltip(); scheduleDraw(); }
     if (e.key === '+' || e.key === '=') { e.preventDefault(); zoom(.7); }
     if (e.key === '-') { e.preventDefault(); zoom(1.4); }
-    if (e.key === '0') { resetView(); scheduleDraw(); }
+    if (e.key === '0') { resetView(); update(); }
   });
   $('convergence').addEventListener('click', e => {
     if (!chart || !state.data) return;
