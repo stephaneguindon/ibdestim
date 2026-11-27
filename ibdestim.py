@@ -122,12 +122,12 @@ random.seed()
 parser = argparse.ArgumentParser(description="Estimate migration and population size parameters under a 2D continuous-time reflected random walk model.")
 parser.add_argument("--input-file", "--input_file", default="/tmp/coalescent_times.txt",
                     help="path to the input file (default: /tmp/coalescent_times.txt)")
-parser.add_argument("--output-file", "--output_file", default="/tmp/ibd_results.txt",
-                    help="path to the output file (default: /tmp/ibd_results.txt)")
-parser.add_argument("--n-subsamples", "--subsample_size", type=int, default=100,
-                    help="subsample size (default: 100)")
-parser.add_argument("--l_max", "--max_l", type=float, default=150,
-                    help="maximum population size (default: 150)")
+parser.add_argument("--output-file", "--output_file", nargs="?", const=None, default=None,
+                    help="optional path to save iteration results (default: print only)")
+parser.add_argument("--sampling_prop", "--sample_prop", type=float, default=1.0,
+                    help="sub-sampling proportion (default: 0.5)")
+parser.add_argument("--l_max", "--max_l", type=float, default=250,
+                    help="maximum population size (default: 250)")
 parser.add_argument("--l_min", "--min_l", type=float, default=10,
                     help="minimum population size (default: 10)")
 
@@ -135,20 +135,23 @@ args = parser.parse_args()
 
 input_file = args.input_file
 output_file = args.output_file
-subsample_size = args.n_subsamples
 
-try:
-    os.remove(output_file)
-    print(f"Output file deleted successfully: {output_file}")
-except FileNotFoundError:
-    pass
+if output_file is not None:
+	try:
+		os.remove(output_file)
+		print(f"Output file deleted successfully: {output_file}")
+	except FileNotFoundError:
+		pass
 
 
 print(f"Running maximum-likelihood estimation for data in file {input_file}")
-print(f"Results will be saved to file {output_file}")
+if output_file is not None:
+	print(f"Results will be saved to file {output_file}")
 
 data = pd.read_csv(input_file, sep="\t")
+subsample_size = int(args.sampling_prop * data.shape[0])
 print(f"Loaded {data.shape[0]} data points")
+print(f"Sub-sampling proportion: {args.sampling_prop}")
 print(f"Subsampling data to {subsample_size} points")
 
 
@@ -165,13 +168,11 @@ for column in ("x1", "y1", "x2", "y2"):
 	)
 
 
-# take the first subsample_size rows of the data
-data = data.loc[:(subsample_size - 1)]
+# sample unifromly at random subsample_size rows of the data
+data = data.sample(n=subsample_size)
 
-# data = data.sample(n=subsample_size)
-
-m = np.linspace(0.01, 1.0, 10)
-l = np.linspace(args.l_min, args.l_max, 10)
+m = np.linspace(0.01, 1.0, 20)
+l = np.linspace(args.l_min, args.l_max, 20)
 l = np.round(l,0)
 
 lenm = len(m)
@@ -179,11 +180,17 @@ lenl = len(l)
 
 m = np.repeat(m, lenl)
 l = np.tile(l, lenm)
-lk = np.zeros((lenm*lenl))
+lk = np.repeat(-np.inf, lenm*lenl)
 
+iter = 0
 for i in range(len(m)):
   lk[i] = ibd_lk((m[i],l[i]),data)
-  print(f"Pre-calculation step... m={m[i]:.2f} l={int(l[i])} lk={lk[i]:.2f}", end="\r")
+  print(f"Pre-calculation steps... m={m[i]:7.3f} l={int(l[i]):5d} lk={lk[i]:15.6g}", end="\r")
+  if output_file is not None:
+    with open(output_file, "a") as f:
+      if(iter == 1): f.write("iter m l lk\n")
+      for i in range(len(m)):
+        f.write(f"{iter} {m[i]} {l[i]} {lk[i]}\n")
 
 # rank the values of lk in decreasing order and save the corresponding values of m and l
 sorted_indices = (-lk).argsort()
@@ -191,24 +198,24 @@ lk = lk[sorted_indices]
 m = m[sorted_indices]
 l = l[sorted_indices]
 
-iter = 0
-keep_frac = 0.8;
+current_mean = np.mean(lk)
+previous_mean = 0.0
 
-while(lk[0] - lk[int(keep_frac*len(lk))] > 1):
+keep_frac = 0.7;
+
+while(abs(current_mean - previous_mean) > 0.5):
   iter += 1
-
-  # Save results to file
-  with open(output_file, "a") as f:
-    if(iter == 1): f.write("iter m l lk\n")
-    for i in range(len(m)):
-      f.write(f"{iter} {m[i]} {l[i]} {lk[i]}\n")
-    f.close
+  
+  if output_file is not None:
+    with open(output_file, "a") as f:
+      if(iter == 1): f.write("iter m l lk\n")
+      for i in range(len(m)):
+        f.write(f"{iter} {m[i]} {l[i]} {lk[i]}\n")
   
   for i in range(int(keep_frac*len(m)),len(m),1):
     ref = np.random.randint(0,int(keep_frac*len(m)))
-    # ref = np.random.randint(0,(1-keep_frac)*len(m))
-    m[i] = m[ref] + np.random.normal(0, m[ref]/10)
-    l[i] = l[ref] + np.random.normal(0, l[ref]/10)
+    m[i] = m[ref] + np.random.normal(0, m[ref]/8)
+    l[i] = l[ref] + np.random.normal(0, l[ref]/8)
 		
     m[i] = np.maximum(m[i], 0.01)
     m[i] = np.minimum(m[i], 1.00)
@@ -225,5 +232,10 @@ while(lk[0] - lk[int(keep_frac*len(lk))] > 1):
   m = m[sorted_indices]
   l = l[sorted_indices]
 
+  previous_mean = current_mean
+  current_mean = np.mean(lk)
+
 	# print optimal values of parameters	
-  print(f"Iter: {iter:5d} <> max. log(lk): {lk[0]:.2f} optimal m: {m[0]:.2f} optimal l: {l[0]:4.0f} delta log(lk): {(lk[0] - lk[int(0.8*len(lk))]):.2f}", end="\n")
+  print(f"Iter: {iter:5d} <> max. log(lk): {lk[0]:15.6g} mean log(lk): {current_mean:15.6g} optimal m: {m[0]:.2f} optimal l: {l[0]:5.0f} delta log(lk): {abs(current_mean - previous_mean):6.2g}", end="\n")
+
+print(f"Final estimates <> m: {m[0]:.2f} l: {l[0]:5.0f}", end="\n")

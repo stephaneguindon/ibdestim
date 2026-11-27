@@ -50,8 +50,8 @@
         <details class="settings" id="plot-settings" open>
           <summary>Plot settings</summary>
           <label>Background<select id="metric"><option value="loglk" selected>logLk</option><option value="density">Density</option></select></label>
-          <label>Display<select id="surface"><option value="smooth" selected>Contours + heatmap</option><option value="cells">Heatmap only</option><option value="contours">Points + contours</option><option value="none">Points only</option></select></label>
-          <p class="hint" id="surface-note">Colors show the best visible logLk in each cell. Contours show point density. Untested cells are gray.</p>
+          <label>Display<select id="surface"><option value="contours" selected>Point+contours</option></select></label>
+          <p class="hint" id="surface-note">Contours show the density of visible points; dots are colored by logLk.</p>
           <label>Color scale<select id="contrast"><option value="linear">Linear</option><option value="quantile" selected>Quantiles</option><option value="focus">Within 10 of the maximum</option><option value="log" hidden disabled>Logarithmic (point count)</option></select></label>
           <div class="setting-line"><label for="points">Show tested points</label><input id="points" type="checkbox" checked></div>
           <div class="setting-line"><label for="show-best">Show optimal solution</label><input id="show-best" type="checkbox" checked></div>
@@ -66,7 +66,7 @@
             </div>
           </details>
         </details>
-        <p class="reading-key">At each generation, only the top 80% of points evaluated so far by logLk are plotted. Contours show where the search concentrates. A star marks the best visible logLk. Hover over a cell for its count and best result, or click a point to keep it selected.</p>
+        <p class="reading-key">Points are ranked by logLk across the full dataset, and only the overall top 20% are plotted. At each generation, the plot shows the retained points evaluated up to that point. Contours show where the search concentrates. A star marks the best visible logLk. Hover over a cell for its count and best result, or click a point to keep it selected.</p>
       </aside>
       <div class="main-column">
         <section class="stats" aria-label="Visible results">
@@ -76,7 +76,7 @@
         </section>
         <section class="card map-card">
           <div class="card-heading">
-            <div><h2>Parameter space <span id="data-badge" class="badge">No data</span></h2><p id="map-caption">Color: best logLk per cell. Contours: density of tested points.</p></div>
+            <div><h2>Parameter space <span id="data-badge" class="badge">No data</span></h2><p id="map-caption">Contours: density of visible tested points. Dot color: logLk.</p></div>
             <div class="plot-actions">
               <button id="zoom-in" class="icon-button" title="Zoom in" aria-label="Zoom in">+</button>
               <button id="zoom-out" class="icon-button" title="Zoom out" aria-label="Zoom out">−</button>

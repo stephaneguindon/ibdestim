@@ -3,7 +3,7 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const C = window.IBD;
-  const state = { parsed: null, data: null, visible: [], current: 0, cumulative: true, timer: null,
+  const state = { parsed: null, data: null, topPoints: [], visible: [], current: 0, cumulative: true, timer: null,
     source: null, view: { x0: 0, x1: 1, y0: 0, y1: 200 }, pinned: null, densityCache: null };
   const format = (n, digits = 3) => Number.isFinite(n) ? n.toLocaleString('en-US', { maximumFractionDigits: digits }) : '—';
   const axisFormat = n => Math.abs(n) >= 100000 ? n.toExponential(1) : format(n, Math.abs(n) < .01 && n !== 0 ? 5 : 2);
@@ -40,7 +40,7 @@
       fullView.y1 = generationYLimits(state.visible, previous).upper;
       const wasFullView = Object.keys(fullView).every(key => Math.abs(state.view[key] - fullView[key]) < 1e-9);
       const pinned = state.pinned;
-      stop(); state.data = data; state.pinned = null; hideTooltip();
+      stop(); state.data = data; state.topPoints = C.topLikelihood(data.points); state.pinned = null; hideTooltip();
       if (parsed !== state.parsed) { state.parsed = parsed; populateMapping(parsed, columns); }
       state.current = preserve && previous ? (wasLatest ? data.generations.length - 1 : Math.max(0, data.generations.indexOf(currentId))) : 0;
       if (!preserve || wasFullView) resetView();
@@ -54,7 +54,7 @@
       const notices = [];
       if (problems.length) notices.push(`Skipped: ${problems.join('; ')}.`);
       if (state.parsed.headerless) notices.push('No header found. Assuming m, l, logLk for three columns, or generation, m, l, logLk for four. Check the column mapping.');
-      if (data.noGenerations) notices.push('No generation column found. Showing the top 80% of valid points together. You can use row order to create playback steps.');
+      if (data.noGenerations) notices.push('No generation column found. Showing the overall top 20% of valid points by logLk. You can use row order to create playback steps.');
       if (data.synthetic) notices.push('Playback steps follow row order. They do not represent actual generations.');
       if (data.generations.some(v => !Number.isFinite(C.number(v)))) notices.push('Text generation IDs are shown in order of first appearance.');
       message(notices.join(' '));
@@ -74,7 +74,7 @@
   }
   function loadParsed(parsed, name) {
     // Do not show the previous file's map under a newly imported file's name.
-    stop(); state.data = null; state.visible = []; state.best = null; state.pinned = null;
+    stop(); state.data = null; state.topPoints = []; state.visible = []; state.best = null; state.pinned = null;
     hideTooltip(); resetView();
     $('empty').hidden = false; $('empty').querySelector('strong').textContent = 'Choose the columns to display this file';
     $('data-badge').textContent = 'Waiting for column mapping';
@@ -230,9 +230,8 @@
 
   function update() {
     const d = state.data; if (!d) return;
-    const evaluated = d.points.filter(p => p.gi <= state.current);
-    const topPoints = C.topLikelihood(evaluated);
-    state.visible = state.cumulative ? topPoints : topPoints.filter(p => p.gi === state.current);
+    const evaluatedTopPoints = state.topPoints.filter(p => p.gi <= state.current);
+    state.visible = state.cumulative ? evaluatedTopPoints : evaluatedTopPoints.filter(p => p.gi === state.current);
     const full = initialView(), { upper, padding } = generationYLimits(state.visible, d);
     state.view.y1 = upper;
     state.view.y0 = Math.min(state.view.y0, Math.max(full.y0, upper - Math.max(padding, 1e-7)));
@@ -248,8 +247,8 @@
     $('stat-count').textContent = format(state.visible.length, 0);
     $('stat-total').textContent = `of ${format(d.points.length, 0)} valid points`;
     const evaluatedCount = d.evaluatedCounts.slice(0, state.current + 1).reduce((sum, n) => sum + n, 0);
-    $('generation-info').textContent = d.noGenerations ? 'No generation IDs. Showing the top 80% of valid points.' :
-      `${d.synthetic ? 'Step (from rows)' : 'Generation'} ${d.generations[state.current]} · ${state.cumulative ? `${format(state.visible.length, 0)} plotted of ${format(evaluatedCount, 0)} evaluated so far` : `${format(state.visible.length, 0)} current-generation points in cumulative top 80% · ${format(d.evaluatedCounts[state.current], 0)} evaluated this generation`} · ${state.current + 1} / ${d.generations.length}`;
+    $('generation-info').textContent = d.noGenerations ? 'No generation IDs. Showing the top 20% of all valid points by logLk.' :
+      `${d.synthetic ? 'Step (from rows)' : 'Generation'} ${d.generations[state.current]} · ${state.cumulative ? `${format(state.visible.length, 0)} plotted of ${format(evaluatedCount, 0)} evaluated so far (top 20% overall by logLk)` : `${format(state.visible.length, 0)} points from this generation in the overall top 20% by logLk · ${format(d.evaluatedCounts[state.current], 0)} evaluated this generation`} · ${state.current + 1} / ${d.generations.length}`;
     $('current-generation').textContent = d.noGenerations ? 'All points' : `${d.synthetic ? 'Step' : 'Generation'} ${d.generations[state.current]}`;
     $('generation').value = String(state.current);
     $('prev').disabled = state.current === 0;
@@ -265,7 +264,7 @@
     }));
     $('map').setAttribute('aria-label', best ?
       `${likelihoodBackground() ? 'LogLk and point density' : 'Point density'} for ${state.visible.length} visible tested points. Best logLk ${best.z}, at m ${best.x}, l ${best.y}.` :
-      `No points are in the cumulative top 80% for generation ${d.generations[state.current]}.`);
+      `No points from this generation are in the overall top 20% by logLk through generation ${d.generations[state.current]}.`);
     if (state.pinned && !state.visible.includes(state.pinned)) { state.pinned = null; hideTooltip(); }
     updateLegend(); scheduleDraw();
   }

@@ -99,7 +99,7 @@
       synthetic: g < 0 && Boolean(options.rowOrder), noGenerations: g < 0 && !options.rowOrder };
   }
   function topLikelihood(points) {
-    const keepCount = Math.ceil(points.length * .8);
+    const keepCount = Math.ceil(points.length * .2);
     if (keepCount === points.length) return [...points];
     const retained = new Set([...points].sort((a, b) => b.z - a.z || a.row - b.row).slice(0, keepCount));
     return points.filter(p => retained.has(p));
